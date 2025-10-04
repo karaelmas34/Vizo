@@ -1,0 +1,13 @@
+**/.venv/
+**/__pycache__/
+**/*.pyc
+**/node_modules/
+backend/.env
+backend/vizoai.db
+backend/models/Wan2.2-TI2V-5B/
+outputs/
+rar/
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
