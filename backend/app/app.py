@@ -1,8 +1,6 @@
-# backend/app/app.py
-
 import os, uuid, json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -25,10 +23,14 @@ except Exception:
     lipsync = None
 
 
-# -------------------- ADMIN SEED --------------------
+# ---------- CONST / ENV ----------
+PIPER_VOICES_DIR = Path(os.getenv("PIPER_VOICES_DIR", "/workspace/models/piper-voices"))
+DEFAULT_TTS_FEMALE = os.getenv("DEFAULT_TTS_FEMALE", "")
+DEFAULT_TTS_MALE = os.getenv("DEFAULT_TTS_MALE", "")
 
+
+# ---------- ADMIN SEED ----------
 def seed_admin_if_missing():
-    """admin@vizo.ai / Karaelmas.034 kullanıcısı yoksa oluşturur (idempotent)."""
     with SessionLocal() as db:
         exists = db.query(User).filter(User.email == "admin@vizo.ai").first()
         if exists:
@@ -47,11 +49,10 @@ def seed_admin_if_missing():
             db.rollback()
 
 
-# -------------------- APP --------------------
-
+# ---------- APP ----------
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-app = FastAPI(title="VizoAI Backend", version="0.7.0")
+app = FastAPI(title="VizoAI Backend", version="0.8.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -60,33 +61,27 @@ app.add_middleware(
     allow_credentials=True,
 )
 
-# Soğuk başlatmada tablo + seed hazır olsun (idempotent)
-init_db()
-migrate_schema(engine)
-seed_admin_if_missing()
-
+# idempotent init
+init_db(); migrate_schema(engine); seed_admin_if_missing()
 
 @app.on_event("startup")
 def _startup():
-    # Bazı ortamlarda startup event daha garantili tetiklenir; yine idempotent
-    init_db()
-    migrate_schema(engine)
-    seed_admin_if_missing()
+    init_db(); migrate_schema(engine); seed_admin_if_missing()
 
 
-# -------------------- BASIC ENDPOINTS --------------------
-
+# ---------- BASIC ----------
 @app.get("/api/ping")
 def ping():
     return {"ok": True, "message": "VizoAI backend online"}
 
 @app.get("/health")
 def health():
-    return {"ok": True}
+    # basit mount kontrolü, opsiyonel
+    voices_ok = PIPER_VOICES_DIR.exists()
+    return {"ok": True, "voices_mounted": voices_ok, "voices_dir": str(PIPER_VOICES_DIR)}
 
 
-# -------------------- HELPERS --------------------
-
+# ---------- HELPERS ----------
 def _rel_url(p: Path) -> str:
     try:
         rel = Path(p).resolve().relative_to(OUTPUT_DIR.resolve())
@@ -107,10 +102,6 @@ def _to_local_image_path(img_path: str) -> str:
     return img_path
 
 def _center_crop_to_aspect(img_path: Path, target_aspect: str) -> Path:
-    """
-    Görseli merkezden kırparak 16:9 veya 9:16’ya oturtup
-    OUTPUT_DIR/inputs/<name>__crop.jpg şeklinde kaydeder.
-    """
     img = Image.open(img_path).convert("RGB")
     w, h = img.size
     if target_aspect == "9:16":
@@ -137,8 +128,7 @@ def _center_crop_to_aspect(img_path: Path, target_aspect: str) -> Path:
     return out_path
 
 
-# -------------------- AUTH --------------------
-
+# ---------- AUTH ----------
 @app.post("/auth/register")
 async def register(request: Request, db: Session = Depends(get_db)):
     try:
@@ -155,11 +145,7 @@ async def register(request: Request, db: Session = Depends(get_db)):
     user = User(name=name, email=email, password_hash=get_password_hash(password))
     db.add(user); db.commit(); db.refresh(user)
     token = create_access_token({"sub": str(user.id)})
-    return {
-        "ok": True,
-        "token": token,
-        "user": {"id": user.id, "name": user.name, "email": user.email, "role": user.role, "credits": user.credits}
-    }
+    return {"ok": True, "token": token, "user": {"id": user.id, "name": user.name, "email": user.email, "role": user.role, "credits": user.credits}}
 
 @app.post("/auth/login")
 async def login(request: Request, db: Session = Depends(get_db)):
@@ -175,15 +161,10 @@ async def login(request: Request, db: Session = Depends(get_db)):
     import datetime as _dt
     user.last_login = _dt.datetime.utcnow(); db.commit()
     token = create_access_token({"sub": str(user.id)})
-    return {
-        "ok": True,
-        "token": token,
-        "user": {"id": user.id, "name": user.name, "email": user.email, "role": user.role, "credits": user.credits}
-    }
+    return {"ok": True, "token": token, "user": {"id": user.id, "name": user.name, "email": user.email, "role": user.role, "credits": user.credits}}
 
 
-# -------------------- UPLOAD --------------------
-
+# ---------- UPLOAD ----------
 @app.post("/api/upload")
 async def upload_image(
     request: Request,
@@ -202,12 +183,7 @@ async def upload_image(
         im = Image.open(out_path); w, h = im.size
     except Exception:
         w = h = 0
-    up = Upload(
-        user_id=(current_user.id if current_user else None),
-        path=str(out_path),
-        w=w, h=h,
-        preview_url=None
-    )
+    up = Upload(user_id=(current_user.id if current_user else None), path=str(out_path), w=w, h=h, preview_url=None)
     db.add(up); db.commit()
 
     faces = detect_faces(str(out_path))
@@ -215,8 +191,7 @@ async def upload_image(
     return {"path": url, "faces": faces}
 
 
-# -------------------- JOB STATUS --------------------
-
+# ---------- JOB STATUS ----------
 @app.get("/api/jobs/{job_id}")
 def job_status(job_id: str, db: Session = Depends(get_db)):
     job = db.query(Job).filter(Job.id == job_id).first()
@@ -225,8 +200,49 @@ def job_status(job_id: str, db: Session = Depends(get_db)):
     return {"status": job.status, "video_path": job.video_path, "error": job.error}
 
 
-# -------------------- GENERATION PIPELINE --------------------
+# ---------- TTS: VOICE DISCOVERY ----------
+def _scan_piper_voices() -> List[Dict[str, Any]]:
+    """
+    PIPER_VOICES_DIR altında **/*.onnx dosyalarını bulur.
+    Her biri için {id,label,path,lang,name} döner.
+    """
+    items: List[Dict[str, Any]] = []
+    if not PIPER_VOICES_DIR.exists():
+        return items
 
+    for onnx in PIPER_VOICES_DIR.rglob("*.onnx"):
+        rel = onnx.relative_to(PIPER_VOICES_DIR)
+        parts = rel.parts
+        lang = parts[0] if len(parts) > 1 else "unknown"
+        base = onnx.stem  # 'en_US-amy-medium'
+        label = f"{lang} · {base}"
+        items.append({
+            "id": str(rel).replace("/", "__"),
+            "label": label,
+            "path": str(onnx),
+            "lang": lang,
+            "name": base,
+            "config": (str(onnx) + ".json") if (onnx.parent / (onnx.name + ".json")).exists() else None,
+        })
+    # alfabetik tek tip
+    items.sort(key=lambda x: (x["lang"], x["name"]))
+    return items
+
+@app.get("/api/tts/voices")
+def list_voices():
+    """
+    Frontend drop-down bu endpoint’i çağıracak.
+    """
+    return {
+        "ok": True,
+        "dir": str(PIPER_VOICES_DIR),
+        "count": len(_scan_piper_voices()),
+        "voices": _scan_piper_voices(),
+        "defaults": {"female": DEFAULT_TTS_FEMALE, "male": DEFAULT_TTS_MALE},
+    }
+
+
+# ---------- GENERATION PIPELINE ----------
 def _run_generation(job_id: str):
     db = SessionLocal()
     try:
@@ -249,7 +265,7 @@ def _run_generation(job_id: str):
             from pydub import AudioSegment
             AudioSegment.silent(duration=1000).export(audio_path, format="wav")
 
-        # 2) GÖRSELİ HEDEFE KIRP + WAN
+        # 2) GÖRSEL + WAN
         src = Path(job.image_path)
         if not src.exists():
             raise FileNotFoundError(f"image not found: {src}")
@@ -257,7 +273,7 @@ def _run_generation(job_id: str):
         cropped = _center_crop_to_aspect(src, aspect)
         base_video = run_ti2v(str(cropped), job.prompt, aspect, job.resolution)
 
-        # 3) LIPSYNC (opsiyonel) → olmazsa mux
+        # 3) LIPSYNC→mux
         final_video = base_video
         if ENABLE_MUSETALK and lipsync is not None:
             try:
@@ -266,7 +282,7 @@ def _run_generation(job_id: str):
                 if synced.exists():
                     final_video = synced
             except Exception:
-                pass  # mux fallback
+                pass
 
         if final_video == base_video:
             try:
@@ -288,14 +304,8 @@ def _run_generation(job_id: str):
     finally:
         db.close()
 
-
 @app.post("/api/generate-s2v")
-def generate(
-    payload: GeneratePayload,
-    bg: BackgroundTasks,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
+def generate(payload: GeneratePayload, bg: BackgroundTasks, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     job_id = uuid.uuid4().hex[:12]
     imgp = _to_local_image_path(payload.imagePath)
     p = Path(imgp)
@@ -309,7 +319,7 @@ def generate(
         user_id=current_user.id if current_user else None,
         image_path=str(p),
         aspect=aspect,
-        resolution=payload.resolution,   # UI label; WAN tarafı sabit piksele map ediyor
+        resolution=payload.resolution,
         prompt=payload.prompt or payload.settings.scenePrompt or "",
         dialogues_json=json.dumps([d.dict() for d in payload.dialogues]) if payload.dialogues else "[]",
         status="queued"
@@ -319,8 +329,7 @@ def generate(
     return {"job_id": job_id}
 
 
-# -------------------- STATIC OUTPUTS --------------------
-
+# ---------- STATIC OUTPUTS ----------
 @app.get("/outputs/{path:path}")
 def get_output(path: str):
     fpath = OUTPUT_DIR / path
