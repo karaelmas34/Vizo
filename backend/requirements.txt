@@ -12,3 +12,5 @@ pydub==0.25.1
 aiofiles==23.2.1
 easydict==1.10
 numpy==1.26.4
+piper-tts
+onnxruntime
