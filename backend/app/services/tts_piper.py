@@ -1,62 +1,111 @@
+import os
+import json
+import shutil
+import subprocess
+import tempfile
+import wave
 from pathlib import Path
-from typing import List, Dict, Any, Optional
-from pydub import AudioSegment
-from ..config import PIPER_BIN, PIPER_VOICE_FEMALE, PIPER_VOICE_MALE, OUTPUT_DIR
-import subprocess, shutil
+from typing import List, Dict, Any
 
-def _voice_path_for_gender(gender: Optional[str]) -> str:
-    if (gender or '').lower() == 'male':
-        return PIPER_VOICE_MALE or PIPER_VOICE_FEMALE
-    return PIPER_VOICE_FEMALE or PIPER_VOICE_MALE
+PIPER_VOICES_DIR = Path(os.getenv("PIPER_VOICES_DIR", "/workspace/models/piper-voices"))
+DEFAULT_TTS_FEMALE = os.getenv("DEFAULT_TTS_FEMALE", "")
+DEFAULT_TTS_MALE = os.getenv("DEFAULT_TTS_MALE", "")
 
-def _piper_ok() -> tuple[bool, str]:
-    p = shutil.which(PIPER_BIN)
-    if not p: return (False, f"Piper not found: {PIPER_BIN}")
-    if "ffmpeg" in p.lower(): return (False, f"PIPER_BIN points to ffmpeg: {p}")
-    return (True, p)
+def _exists(p: str) -> bool:
+    try:
+        return Path(p).exists()
+    except Exception:
+        return False
 
-def _log_tts(msg: str):
-    log = OUTPUT_DIR / "audio" / "_tts.log"
-    log.parent.mkdir(parents=True, exist_ok=True)
-    with open(log, "a") as f:
-        f.write(msg.rstrip() + "\n")
+def _resolve_voice_path(d: Dict[str, Any]) -> str:
+    """
+    Öncelik:
+      1) dialogue.voicePath (tam onnx yolu)
+      2) env DEFAULT_TTS_FEMALE / DEFAULT_TTS_MALE (gender'a göre)
+      3) PIPER_VOICES_DIR içinden ilk uygun .onnx
+    """
+    vp = d.get("voicePath") or d.get("voice_path")
+    if vp and _exists(vp):
+        return vp
 
-def synthesize_piper(text: str, voice_path: str, out_wav: Path):
-    ok, why = _piper_ok()
-    if not ok:
-        _log_tts(f"[WARN] {why}; generating silent audio instead of Piper.")
-        # 1 sn sessiz
-        AudioSegment.silent(duration=1000).export(out_wav, format="wav")
+    gender = (d.get("gender") or d.get("voiceGender") or "").lower()
+    if gender == "female" and DEFAULT_TTS_FEMALE:
+        return DEFAULT_TTS_FEMALE
+    if gender == "male" and DEFAULT_TTS_MALE:
+        return DEFAULT_TTS_MALE
+
+    # fallback: klasörden ilk .onnx
+    for onnx in PIPER_VOICES_DIR.rglob("*.onnx"):
+        return str(onnx)
+
+    raise RuntimeError("No Piper voice model (.onnx) found")
+
+def _guess_config_path(model_path: str) -> str | None:
+    p = Path(model_path)
+    c1 = p.with_suffix(p.suffix + ".json")       # foo.onnx.json
+    if c1.exists():
+        return str(c1)
+    c2 = p.with_suffix(".json")                  # foo.json
+    if c2.exists():
+        return str(c2)
+    # bazı repolarda adlandırma farklı olabilir → yoksa None
+    return None
+
+def _ensure_piper_cli():
+    if shutil.which("piper") is None:
+        raise RuntimeError("piper CLI not found. Please ensure 'piper-tts' is installed in the image.")
+
+def _concat_wavs(parts: List[Path], out_path: Path):
+    if not parts:
         return
-    out_wav.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [PIPER_BIN, "-m", voice_path, "-f", str(out_wav)]
-    proc = subprocess.run(cmd, input=text.encode('utf-8'),
-                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    if proc.returncode != 0:
-        _log_tts("[PIPER ERR]\n" + proc.stdout.decode('utf-8', 'ignore'))
-        # Piper hata verirse de sessize düş
-        AudioSegment.silent(duration=1000).export(out_wav, format="wav")
+    # Tüm parçalar aynı parametrelerde olsun varsayımı
+    with wave.open(str(parts[0]), "rb") as w0:
+        params = w0.getparams()
+        frames = [w0.readframes(w0.getnframes())]
+    for p in parts[1:]:
+        with wave.open(str(p), "rb") as w:
+            if w.getparams() != params:
+                # farklı samplerate/channel varsa pydub ile decode/concat yapılabilir (basitlik adına zorlamıyoruz)
+                raise RuntimeError("Voice fragments have different WAV params; use same Piper model family.")
+            frames.append(w.readframes(w.getnframes()))
+    with wave.open(str(out_path), "wb") as wout:
+        wout.setparams(params)
+        for fr in frames:
+            wout.writeframes(fr)
 
-def synthesize_dialogues(dialogues: List[Dict[str, Any]], out_wav: Path, gap_ms: int = 250):
-    clips = []
-    for i, d in enumerate(dialogues or []):
-        txt = (d.get('text') or '').strip()
-        if not txt:
+def synthesize_dialogues(dialogues: List[Dict[str, Any]] | Any, out_wav_path: Path | str):
+    """
+    dialogues: [{ text, voicePath?, gender? }, ...]
+    """
+    _ensure_piper_cli()
+    if not dialogues:
+        # 1 sn sessizlik
+        from pydub import AudioSegment
+        AudioSegment.silent(duration=1000).export(str(out_wav_path), format="wav")
+        return
+
+    tmpdir = Path(tempfile.mkdtemp(prefix="piper_"))
+    parts: List[Path] = []
+
+    for i, d in enumerate(dialogues):
+        if hasattr(d, "dict"):  # Pydantic objesi olabilir
+            d = d.dict()
+        text = (d.get("text") or "").strip()
+        if not text:
             continue
-        voice_path = _voice_path_for_gender(d.get('ttsGender'))
-        if not voice_path:
-            clips.append(AudioSegment.silent(duration=1000)); continue
-        tmp = out_wav.parent / f"seg_{i:03d}.wav"
-        synthesize_piper(txt, voice_path, tmp)
-        try:
-            clips.append(AudioSegment.from_wav(tmp))
-        except Exception:
-            clips.append(AudioSegment.silent(duration=800))
-    final = (clips[0] if clips else AudioSegment.silent(duration=1000))
-    for seg in clips[1:]:
-        final += AudioSegment.silent(duration=gap_ms)
-        final += seg
-    out_wav.parent.mkdir(parents=True, exist_ok=True)
-    final.export(out_wav, format="wav")
-    return out_wav
 
+        model = _resolve_voice_path(d)
+        cfg = _guess_config_path(model)
+        part = tmpdir / f"seg_{i:03}.wav"
+
+        cmd = ["piper", "-m", model, "-f", str(part)]
+        if cfg:
+            cmd += ["-c", cfg]
+
+        # text'i stdin'den gönderiyoruz
+        proc = subprocess.run(cmd, input=text.encode("utf-8"), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if proc.returncode != 0:
+            raise RuntimeError(f"piper failed for segment {i}: {proc.stderr.decode('utf-8', 'ignore')}")
+        parts.append(part)
+
+    _concat_wavs(parts, Path(out_wav_path))
