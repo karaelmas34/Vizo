@@ -1,16 +1,28 @@
+# ASGI
 fastapi==0.114.2
 uvicorn[standard]==0.30.6
 python-multipart==0.0.12
+
+# Core
 pillow==10.4.0
-mediapipe==0.10.18
-opencv-python-headless==4.10.0.84
-SQLAlchemy==2.0.36
-passlib[bcrypt]==1.7.4
-PyJWT==2.9.0
-pydantic==2.9.2
 pydub==0.25.1
-aiofiles==23.2.1
-easydict==1.10
-numpy==1.26.4
-piper-tts
-onnxruntime
+passlib[bcrypt]==1.7.4
+SQLAlchemy==2.0.35
+
+# Optional / Utils
+opencv-python-headless==4.9.0.80
+python-dotenv==1.0.1
+
+# TTS (Piper)
+onnxruntime==1.18.0
+piper-tts==1.2.0
+tqdm==4.66.5
+
+# WAN & audio toolchain
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.3.1
+torchvision==0.18.1
+torchaudio==2.3.1
+
+# Compatibility
+numpy<2
