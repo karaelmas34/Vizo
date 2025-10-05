@@ -273,3 +273,4 @@ def get_output(path: str):
         raise HTTPException(status_code=404, detail="file not found")
     return FileResponse(str(fpath))
 
+init_db(); migrate_schema(engine)
