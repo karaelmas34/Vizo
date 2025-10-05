@@ -16,13 +16,17 @@ from .services.wan22 import run_ti2v
 from .services.tts_piper import synthesize_dialogues
 from .services.mux import mux_audio_to_video
 from .config import OUTPUT_DIR, ENABLE_MUSETALK
+
 try:
     from .services.musetalk import lipsync
 except Exception:
     lipsync = None
 
+
+# -------------------- ADMIN SEED --------------------
+
 def seed_admin_if_missing():
-    # app.py zaten User ve get_password_hash import ediyor → burada kullanmak güvenli
+    """admin@vizo.ai / Karaelmas.034 kullanıcısı yoksa oluşturur."""
     with SessionLocal() as db:
         exists = db.query(User).filter(User.email == "admin@vizo.ai").first()
         if exists:
@@ -41,6 +45,8 @@ def seed_admin_if_missing():
             db.rollback()
 
 
+# -------------------- APP --------------------
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 app = FastAPI(title="VizoAI Backend", version="0.7.0")
@@ -52,11 +58,32 @@ app.add_middleware(
     allow_credentials=True,
 )
 
-init_db(); migrate_schema(engine)
+# Güvenli: idempotent. Soğuk başlatmada tablo + seed hazır olsun.
+init_db()
+migrate_schema(engine)
+seed_admin_if_missing()
+
+
+@app.on_event("startup")
+def _startup():
+    # Bazı deploy senaryolarında startup event daha garantili tetiklenir
+    init_db()
+    migrate_schema(engine)
+    seed_admin_if_missing()
+
+
+# -------------------- BASIC ENDPOINTS --------------------
 
 @app.get("/api/ping")
 def ping():
     return {"ok": True, "message": "VizoAI backend online"}
+
+@app.get("/health")
+def health():
+    return {"ok": True}
+
+
+# -------------------- HELPERS --------------------
 
 def _rel_url(p: Path) -> str:
     try:
@@ -107,7 +134,8 @@ def _center_crop_to_aspect(img_path: Path, target_aspect: str) -> Path:
     crop_img.save(out_path, format="JPEG", quality=95)
     return out_path
 
-# -------- AUTH (değişmedi) --------
+
+# -------------------- AUTH --------------------
 
 @app.post("/auth/register")
 async def register(request: Request, db: Session = Depends(get_db)):
@@ -125,7 +153,11 @@ async def register(request: Request, db: Session = Depends(get_db)):
     user = User(name=name, email=email, password_hash=get_password_hash(password))
     db.add(user); db.commit(); db.refresh(user)
     token = create_access_token({"sub": str(user.id)})
-    return {"ok": True, "token": token, "user": {"id": user.id, "name": user.name, "email": user.email, "role": user.role, "credits": user.credits}}
+    return {
+        "ok": True,
+        "token": token,
+        "user": {"id": user.id, "name": user.name, "email": user.email, "role": user.role, "credits": user.credits}
+    }
 
 @app.post("/auth/login")
 async def login(request: Request, db: Session = Depends(get_db)):
@@ -141,9 +173,14 @@ async def login(request: Request, db: Session = Depends(get_db)):
     import datetime as _dt
     user.last_login = _dt.datetime.utcnow(); db.commit()
     token = create_access_token({"sub": str(user.id)})
-    return {"ok": True, "token": token, "user": {"id": user.id, "name": user.name, "email": user.email, "role": user.role, "credits": user.credits}}
+    return {
+        "ok": True,
+        "token": token,
+        "user": {"id": user.id, "name": user.name, "email": user.email, "role": user.role, "credits": user.credits}
+    }
 
-# -------- UPLOAD --------
+
+# -------------------- UPLOAD --------------------
 
 @app.post("/api/upload")
 async def upload_image(
@@ -163,14 +200,20 @@ async def upload_image(
         im = Image.open(out_path); w, h = im.size
     except Exception:
         w = h = 0
-    up = Upload(user_id=(current_user.id if current_user else None), path=str(out_path), w=w, h=h, preview_url=None)
+    up = Upload(
+        user_id=(current_user.id if current_user else None),
+        path=str(out_path),
+        w=w, h=h,
+        preview_url=None
+    )
     db.add(up); db.commit()
 
     faces = detect_faces(str(out_path))
     url = f"/outputs/uploads/{out_path.name}"
     return {"path": url, "faces": faces}
 
-# -------- JOB STATUS --------
+
+# -------------------- JOB STATUS --------------------
 
 @app.get("/api/jobs/{job_id}")
 def job_status(job_id: str, db: Session = Depends(get_db)):
@@ -179,7 +222,8 @@ def job_status(job_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Job not found")
     return {"status": job.status, "video_path": job.video_path, "error": job.error}
 
-# -------- GENERATION PIPELINE (AUDIO -> WAN -> MUSETALK/MUX) --------
+
+# -------------------- GENERATION PIPELINE --------------------
 
 def _run_generation(job_id: str):
     db = SessionLocal()
@@ -190,7 +234,7 @@ def _run_generation(job_id: str):
         import datetime as _dt
         job.status = "running"; job.updated_at = _dt.datetime.utcnow(); db.commit()
 
-        # 1) SES ÖNCE
+        # 1) SES
         audio_dir = OUTPUT_DIR / "audio"; audio_dir.mkdir(parents=True, exist_ok=True)
         audio_path = audio_dir / f"{job.id}.wav"
         try:
@@ -203,7 +247,7 @@ def _run_generation(job_id: str):
             from pydub import AudioSegment
             AudioSegment.silent(duration=1000).export(audio_path, format="wav")
 
-        # 2) GÖRSELİ HEDEFE KIRP ve WAN
+        # 2) GÖRSELİ HEDEFE KIRP + WAN
         src = Path(job.image_path)
         if not src.exists():
             raise FileNotFoundError(f"image not found: {src}")
@@ -242,8 +286,14 @@ def _run_generation(job_id: str):
     finally:
         db.close()
 
+
 @app.post("/api/generate-s2v")
-def generate(payload: GeneratePayload, bg: BackgroundTasks, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def generate(
+    payload: GeneratePayload,
+    bg: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     job_id = uuid.uuid4().hex[:12]
     imgp = _to_local_image_path(payload.imagePath)
     p = Path(imgp)
@@ -266,11 +316,12 @@ def generate(payload: GeneratePayload, bg: BackgroundTasks, current_user: User =
     bg.add_task(_run_generation, job_id)
     return {"job_id": job_id}
 
+
+# -------------------- STATIC OUTPUTS --------------------
+
 @app.get("/outputs/{path:path}")
 def get_output(path: str):
     fpath = OUTPUT_DIR / path
     if not fpath.exists():
         raise HTTPException(status_code=404, detail="file not found")
     return FileResponse(str(fpath))
-
-init_db(); migrate_schema(engine)
