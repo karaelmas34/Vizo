@@ -8,17 +8,16 @@ from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 from PIL import Image
 
-from .db import init_db, migrate_schema, engine, SessionLocal, User, Job, Upload, Face, DialogueLog
-from .auth import get_db, get_current_user, get_password_hash, verify_password, create_access_token
-from .schemas import UploadResponse, GeneratePayload
-from .services.face_detect import detect_faces, choose_aspect_from_image
-from .services.wan22 import run_ti2v
-from .services.tts_piper import synthesize_dialogues
-from .services.mux import mux_audio_to_video
-from .config import OUTPUT_DIR, ENABLE_MUSETALK
-
+from db import init_db, migrate_schema, engine, SessionLocal, User, Job, Upload, Face, DialogueLog
+from auth import get_db, get_current_user, get_password_hash, verify_password, create_access_token
+from schemas import UploadResponse, GeneratePayload
+from services.face_detect import detect_faces, choose_aspect_from_image
+from services.wan22 import run_ti2v
+from services.tts_piper import synthesize_dialogues
+from services.mux import mux_audio_to_video
+from config import OUTPUT_DIR, ENABLE_MUSETALK
 try:
-    from .services.musetalk import lipsync
+    from services.musetalk import lipsync
 except Exception:
     lipsync = None
 
