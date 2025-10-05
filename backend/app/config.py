@@ -20,6 +20,7 @@ SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-change-me")
 ALGORITHM = os.environ.get("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "120"))
 DB_PATH = Path(os.environ.get("VIZOAI_DB_PATH", str((HOME / "dev" / ".VizoAi" / "backend" / "vizoai.db"))))
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 # CUDA
 CUDA_DEVICE = os.environ.get("CUDA_DEVICE", "cuda:0")
@@ -37,4 +38,3 @@ PIPER_VOICE_MALE = os.environ.get("PIPER_VOICE_MALE", "")
 ENABLE_MUSETALK = os.environ.get("ENABLE_MUSETALK", "0") == "1"
 MUSETALK_DIR = Path(os.environ.get("MUSETALK_DIR", str(BACKEND_ROOT / "models" / "MuseTalk")))
 
-DB_PATH.parent.mkdir(parents=True, exist_ok=True)
