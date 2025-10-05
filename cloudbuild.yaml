@@ -1,0 +1,36 @@
+steps:
+  - name: gcr.io/k8s-skaffold/pack
+    entrypoint: pack
+    env:
+      - GOOGLE_ENTRYPOINT=python -m uvicorn app:app --host 0.0.0.0 --port $PORT
+      - GOOGLE_PYTHON_VERSION=3.10
+    args:
+      - build
+      - europe-west1-docker.pkg.dev/vizoai-474113/cloud-run-source-deploy/vizo/vizo-backend:$COMMIT_SHA
+      - --builder=gcr.io/buildpacks/builder:latest
+      - --network=cloudbuild
+      - --path=backend
+      - --env=GOOGLE_ENTRYPOINT
+      - --env=GOOGLE_PYTHON_VERSION
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - europe-west1-docker.pkg.dev/vizoai-474113/cloud-run-source-deploy/vizo/vizo-backend:$COMMIT_SHA
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - run
+      - services
+      - update
+      - vizo-backend
+      - --platform=managed
+      - --image=europe-west1-docker.pkg.dev/vizoai-474113/cloud-run-source-deploy/vizo/vizo-backend:$COMMIT_SHA
+      - --region=europe-west1
+      - --quiet
+
+images:
+  - europe-west1-docker.pkg.dev/vizoai-474113/cloud-run-source-deploy/vizo/vizo-backend:$COMMIT_SHA
+options:
+  logging: CLOUD_LOGGING_ONLY
