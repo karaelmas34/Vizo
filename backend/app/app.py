@@ -21,6 +21,26 @@ try:
 except Exception:
     lipsync = None
 
+def seed_admin_if_missing():
+    # app.py zaten User ve get_password_hash import ediyor → burada kullanmak güvenli
+    with SessionLocal() as db:
+        exists = db.query(User).filter(User.email == "admin@vizo.ai").first()
+        if exists:
+            return
+        admin = User(
+            name="Admin",
+            email="admin@vizo.ai",
+            password_hash=get_password_hash("Karaelmas.034"),
+            role="admin",
+            credits=1000,
+        )
+        db.add(admin)
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 app = FastAPI(title="VizoAI Backend", version="0.7.0")
