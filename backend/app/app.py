@@ -1,3 +1,5 @@
+# backend/app/app.py
+
 import os, uuid, json
 from pathlib import Path
 from typing import Optional
@@ -26,7 +28,7 @@ except Exception:
 # -------------------- ADMIN SEED --------------------
 
 def seed_admin_if_missing():
-    """admin@vizo.ai / Karaelmas.034 kullanıcısı yoksa oluşturur."""
+    """admin@vizo.ai / Karaelmas.034 kullanıcısı yoksa oluşturur (idempotent)."""
     with SessionLocal() as db:
         exists = db.query(User).filter(User.email == "admin@vizo.ai").first()
         if exists:
@@ -58,7 +60,7 @@ app.add_middleware(
     allow_credentials=True,
 )
 
-# Güvenli: idempotent. Soğuk başlatmada tablo + seed hazır olsun.
+# Soğuk başlatmada tablo + seed hazır olsun (idempotent)
 init_db()
 migrate_schema(engine)
 seed_admin_if_missing()
@@ -66,7 +68,7 @@ seed_admin_if_missing()
 
 @app.on_event("startup")
 def _startup():
-    # Bazı deploy senaryolarında startup event daha garantili tetiklenir
+    # Bazı ortamlarda startup event daha garantili tetiklenir; yine idempotent
     init_db()
     migrate_schema(engine)
     seed_admin_if_missing()
