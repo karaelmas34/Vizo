@@ -37,3 +37,4 @@ PIPER_VOICE_MALE = os.environ.get("PIPER_VOICE_MALE", "")
 ENABLE_MUSETALK = os.environ.get("ENABLE_MUSETALK", "0") == "1"
 MUSETALK_DIR = Path(os.environ.get("MUSETALK_DIR", str(BACKEND_ROOT / "models" / "MuseTalk")))
 
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
