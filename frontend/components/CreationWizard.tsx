@@ -1,4 +1,4 @@
-import { add as addJob } from "./services/jobTracker";
+import { add as addJob } from "../services/jobTracker";
 import React, { useState, useEffect } from 'react';
 import type { Character, Dialogue, VideoSettings } from '../types';
 import * as api from '../services/apiService';
@@ -13,6 +13,7 @@ import { useLanguage } from '../contexts/LanguageContext';
 interface CreationWizardProps {
   onStartNew: () => void;
 }
+const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
 
 const CreationWizard: React.FC<CreationWizardProps> = ({ onStartNew }) => {
   const [step, setStep] = useState(1);
@@ -41,31 +42,27 @@ const CreationWizard: React.FC<CreationWizardProps> = ({ onStartNew }) => {
 
         if (status.status === 'done') {
           if (status.video_path) {
-            setGeneratedVideoUrl(`http://localhost:8001/${status.video_path.replace(/\\/g, '/')}`);
+            // ⬇️ Windows \ karakterlerini / yap ve baştaki /’ları temizle
+            const cleanPath = status.video_path.replace(/\\/g, '/').replace(/^\/+/, '');
+            setGeneratedVideoUrl(`${API_BASE}/${cleanPath}`);
             setStep(6);
           } else {
-             throw new Error("Job done but no video path received.");
+            throw new Error("Job done but no video path received.");
           }
-          setJobId(null); // Stop polling
+          setJobId(null);
         } else if (status.status === 'error') {
           console.error("Job failed:", status.error);
           alert(`Video generation failed: ${status.error}`);
-          setJobId(null); // Stop polling
+          setJobId(null);
           setStep(4);
         }
       } catch (error) {
         console.error("Failed to get job status:", error);
         alert("Failed to get job status. Please check console for details.");
-        setJobId(null); // Stop polling
+        setJobId(null);
         setStep(4);
       }
     };
-    
-    if (step === 5) {
-        const intervalId = setInterval(pollJobStatus, 3000);
-        return () => clearInterval(intervalId);
-    }
-  }, [jobId, step]);
 
 
   const handleImageUpload = (file: File, path: string, detectedCharacters: Character[], aspectRatio: '16:9' | '9:16') => {
